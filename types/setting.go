@@ -152,6 +152,7 @@ const (
 	SettingNameDataEngineLogLevel                                       = SettingName("data-engine-log-level")
 	SettingNameDataEngineLogFlags                                       = SettingName("data-engine-log-flags")
 	SettingNameDataEngineInterruptModeEnabled                           = SettingName("data-engine-interrupt-mode-enabled")
+	SettingNameDataEngineIPFamily                                       = SettingName("data-engine-ip-family")
 	SettingNameFreezeFilesystemForSnapshot                              = SettingName("freeze-filesystem-for-snapshot")
 	SettingNameAutoCleanupSnapshotWhenDeleteBackup                      = SettingName("auto-cleanup-when-delete-backup")
 	SettingNameAutoCleanupSnapshotAfterOnDemandBackupCompleted          = SettingName("auto-cleanup-snapshot-after-on-demand-backup-completed")
@@ -269,6 +270,7 @@ var (
 		SettingNameDataEngineLogFlags,
 		SettingNameSnapshotDataIntegrity,
 		SettingNameDataEngineInterruptModeEnabled,
+		SettingNameDataEngineIPFamily,
 		SettingNameReplicaDiskSoftAntiAffinity,
 		SettingNameAllowEmptyNodeSelectorVolume,
 		SettingNameAllowEmptyDiskSelectorVolume,
@@ -424,6 +426,7 @@ var (
 		SettingNameDataEngineLogLevel:                                       SettingDefinitionDataEngineLogLevel,
 		SettingNameDataEngineLogFlags:                                       SettingDefinitionDataEngineLogFlags,
 		SettingNameDataEngineInterruptModeEnabled:                           SettingDefinitionDataEngineInterruptModeEnabled,
+		SettingNameDataEngineIPFamily:                                       SettingDefinitionDataEngineIPFamily,
 		SettingNameReplicaDiskSoftAntiAffinity:                              SettingDefinitionReplicaDiskSoftAntiAffinity,
 		SettingNameAllowEmptyNodeSelectorVolume:                             SettingDefinitionAllowEmptyNodeSelectorVolume,
 		SettingNameAllowEmptyDiskSelectorVolume:                             SettingDefinitionAllowEmptyDiskSelectorVolume,
@@ -1706,6 +1709,20 @@ var (
 		ReadOnly:           false,
 		DataEngineSpecific: true,
 		Default:            fmt.Sprintf("{%q:\"false\"}", longhorn.DataEngineTypeV2),
+	}
+
+	SettingDefinitionDataEngineIPFamily = SettingDefinition{
+		DisplayName: "Data Engine IP Family",
+		Description: "Applies only to the V2 Data Engine. Specifies the IP address " +
+			"family used for NVMe-oF/TCP data transport. Use 'ipv4' for IPv4 (default) or " +
+			"'ipv6' for IPv6. In IPv6-only clusters where pod.Status.PodIP is already IPv6, " +
+			"this setting is auto-detected and can be left as the default.",
+		Category:           SettingCategoryGeneral,
+		Type:               SettingTypeString,
+		Required:           true,
+		ReadOnly:           false,
+		DataEngineSpecific: true,
+		Default:            fmt.Sprintf("{%q:\"ipv4\"}", longhorn.DataEngineTypeV2),
 	}
 
 	SettingDefinitionReplicaDiskSoftAntiAffinity = SettingDefinition{

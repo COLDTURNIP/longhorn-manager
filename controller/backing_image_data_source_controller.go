@@ -476,7 +476,7 @@ func (c *BackingImageDataSourceController) syncBackingImageDataSourcePod(bids *l
 	}
 
 	if podReady {
-		storageIP := c.ds.GetIPFromPodByCNISetting(pod, types.SettingNameStorageNetwork)
+		storageIP := c.ds.GetIPFromPodByCNISetting(pod, types.SettingNameStorageNetwork, false)
 		if bids.Status.StorageIP != storageIP {
 			bids.Status.StorageIP = storageIP
 		}

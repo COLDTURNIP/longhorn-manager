@@ -524,7 +524,7 @@ func (c *BackingImageManagerController) syncBackingImageManagerPod(bim *longhorn
 			}
 
 			if bim.Status.CurrentState == longhorn.BackingImageManagerStateRunning {
-				storageIP := c.ds.GetIPFromPodByCNISetting(pod, types.SettingNameStorageNetwork)
+				storageIP := c.ds.GetIPFromPodByCNISetting(pod, types.SettingNameStorageNetwork, false)
 				if bim.Status.StorageIP != storageIP {
 					bim.Status.StorageIP = storageIP
 					log.Warnf("Inconsistent storage IP from pod %v, update backing image status storage IP %v", pod.Name, bim.Status.StorageIP)

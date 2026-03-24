@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	stdnet "net"
 	"strconv"
 	"strings"
 	"time"
@@ -1212,7 +1212,7 @@ func NewPVCManifest(size int64, pvName, ns, pvcName, storageClassName string, ac
 //	  	  "mac": "02:59:e5:d4:ae:ea",
 //	  	  "dns": {}
 //	    }]
-func (s *DataStore) GetIPFromPodByCNISetting(pod *corev1.Pod, settingName types.SettingName) string {
+func (s *DataStore) GetIPFromPodByCNISetting(pod *corev1.Pod, settingName types.SettingName, applyIPFamily bool) string {
 	log := logrus.WithFields(logrus.Fields{
 		"pod":         pod.Name,
 		"settingName": settingName,
@@ -1224,7 +1224,21 @@ func (s *DataStore) GetIPFromPodByCNISetting(pod *corev1.Pod, settingName types.
 		return pod.Status.PodIP
 	}
 
+	ipFamily := ""
+	if applyIPFamily {
+		ipFamily = s.getDataEngineIPFamily()
+	}
+
 	if setting.Value == types.CniNetworkNone {
+		if ipFamily == "ipv6" {
+			for _, podIP := range pod.Status.PodIPs {
+				if parsedIP := stdnet.ParseIP(podIP.IP); parsedIP != nil && parsedIP.To4() == nil {
+					log.Tracef("Found IPv6 pod IP %v per IP family setting", podIP.IP)
+					return podIP.IP
+				}
+			}
+			log.Warnf("IP family is limited to IPv6 but no matched item found in pod.Status.PodIPs, falling back to PodIP %v", pod.Status.PodIP)
+		}
 		log.Tracef("Found setting value is empty, use pod IP %v", pod.Status.PodIP)
 		return pod.Status.PodIP
 	}
@@ -1255,14 +1269,36 @@ func (s *DataStore) GetIPFromPodByCNISetting(pod *corev1.Pod, settingName types.
 			continue
 		}
 
-		sort.Strings(net.IPs)
-		if net.IPs != nil {
+		if len(net.IPs) > 0 {
+			for _, cniIP := range net.IPs {
+				parsedIP := stdnet.ParseIP(cniIP)
+				if parsedIP == nil {
+					continue
+				}
+				if ipFamily == "ipv6" && parsedIP.To4() == nil {
+					return cniIP
+				} else if ipFamily != "ipv6" && parsedIP.To4() != nil {
+					return cniIP
+				}
+			}
+			if ipFamily != "" {
+				log.Warnf("no matching IP found in CNI network %v IPs that matches IP family %v, falling back to %v", net.Name, ipFamily, net.IPs[0])
+			}
 			return net.IPs[0]
 		}
 	}
 
 	log.Warnf("Failed to get CNI IP from pod, use pod IP %v", pod.Status.PodIP)
 	return pod.Status.PodIP
+}
+
+func (s *DataStore) getDataEngineIPFamily() string {
+	value, err := s.GetSettingValueExistedByDataEngine(
+		types.SettingNameDataEngineIPFamily, longhorn.DataEngineTypeV2)
+	if err != nil || value == "" {
+		return "ipv4"
+	}
+	return value
 }
 
 func (s *DataStore) UpdatePVAnnotation(volume *longhorn.Volume, annotationKey, annotationVal string) error {
