@@ -38,3 +38,6 @@ Dockerfile.dapper[0-9]*
 # editors
 .idea
 
+# AI harness
+.claude/settings.local.json
+CLAUDE.local.md
