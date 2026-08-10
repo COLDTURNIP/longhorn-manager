@@ -173,7 +173,17 @@ func (h *InstanceHandler) syncStatusWithInstanceManager(log *logrus.Entry, im *l
 			return
 		}
 
-		storageIP := h.ds.GetIPFromPodByCNISetting(imPod, types.SettingNameStorageNetwork)
+		storageIP, err := h.ds.GetDataEngineIPFromPodByCNISetting(imPod, types.SettingNameStorageNetwork)
+		if err != nil {
+			status.StorageIP = ""
+			var invalidState *types.ErrorInvalidState
+			if errors.As(err, &invalidState) {
+				log.Warnf("Failed to get data engine IP for instance %v: %v", instanceName, invalidState.Reason)
+			} else {
+				log.WithError(err).Errorf("Failed to get data engine IP for instance %v", instanceName)
+			}
+			return
+		}
 		if status.StorageIP != storageIP {
 			if status.StorageIP != "" {
 				log.Warnf("Instance %v is state running in instance manager %s, but its status Storage IP %s does not match the instance manager recorded Storage IP %s", instanceName, im.Name, status.StorageIP, storageIP)
@@ -221,7 +231,17 @@ func (h *InstanceHandler) syncStatusWithInstanceManager(log *logrus.Entry, im *l
 			return
 		}
 
-		storageIP := h.ds.GetIPFromPodByCNISetting(imPod, types.SettingNameStorageNetwork)
+		storageIP, err := h.ds.GetDataEngineIPFromPodByCNISetting(imPod, types.SettingNameStorageNetwork)
+		if err != nil {
+			status.StorageIP = ""
+			var invalidState *types.ErrorInvalidState
+			if errors.As(err, &invalidState) {
+				log.Warnf("Failed to get data engine IP for instance %v: %v", instanceName, invalidState.Reason)
+			} else {
+				log.WithError(err).Errorf("Failed to get data engine IP for instance %v", instanceName)
+			}
+			return
+		}
 		if status.StorageIP != storageIP {
 			if status.StorageIP != "" {
 				log.Warnf("Instance %v is state suspended in instance manager %s, but its status Storage IP %s does not match the instance manager recorded Storage IP %s", instanceName, im.Name, status.StorageIP, storageIP)

@@ -411,6 +411,18 @@ func (rc *ReplicaController) CreateInstance(obj interface{}) (*longhorn.Instance
 	if r.Status.InstanceManagerName != im.Name {
 		return nil, fmt.Errorf("found instance manager name conflict %s vs %s during replica instance creation", r.Status.InstanceManagerName, im.Name)
 	}
+	dataEngineIPFamily := ""
+	if types.IsDataEngineV1(r.Spec.DataEngine) {
+		instanceManagerPod, err := rc.ds.GetPod(im.Name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to get pod for instance manager %v", im.Name)
+		}
+		var valid bool
+		dataEngineIPFamily, _, valid = getDataEngineIPFamilyFromInstanceManagerPod(instanceManagerPod)
+		if !valid {
+			return nil, fmt.Errorf("failed to get valid data engine IP family from instance manager pod %v", im.Name)
+		}
+	}
 
 	c, err := engineapi.NewInstanceManagerClient(im, false)
 	if err != nil {
@@ -451,6 +463,7 @@ func (rc *ReplicaController) CreateInstance(obj interface{}) (*longhorn.Instance
 		BackingImagePath:              backingImagePath,
 		DataLocality:                  v.Spec.DataLocality,
 		EngineCLIAPIVersion:           cliAPIVersion,
+		DataEngineIPFamily:            dataEngineIPFamily,
 		ExtraLUKS2HeaderSpaceRequired: types.IsVolumeV2EncryptedVolumeWithLuksHeaderLabelTrue(v),
 	})
 }

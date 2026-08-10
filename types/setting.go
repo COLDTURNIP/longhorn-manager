@@ -135,6 +135,7 @@ const (
 	SettingNameOrphanResourceAutoDeletion                               = SettingName("orphan-resource-auto-deletion")
 	SettingNameOrphanResourceAutoDeletionGracePeriod                    = SettingName("orphan-resource-auto-deletion-grace-period")
 	SettingNameStorageNetwork                                           = SettingName("storage-network")
+	SettingNameDataEngineIPFamily                                       = SettingName("data-engine-ip-family")
 	SettingNameEndpointNetworkForRWXVolume                              = SettingName("endpoint-network-for-rwx-volume")
 	SettingNameFailedBackupTTL                                          = SettingName("failed-backup-ttl")
 	SettingNameRecurringSuccessfulJobsHistoryLimit                      = SettingName("recurring-successful-jobs-history-limit")
@@ -208,6 +209,10 @@ const (
 	SettingNameV2DataEngineFastReplicaRebuilding        = SettingName("v2-data-engine-fast-replica-rebuilding")
 	SettingNameV2DataEngineSnapshotDataIntegrity        = SettingName("v2-data-engine-snapshot-data-integrity")
 )
+const (
+	DataEngineIPFamilyIPv4 = "ipv4"
+	DataEngineIPFamilyIPv6 = "ipv6"
+)
 
 var (
 	SettingNameList = []SettingName{
@@ -268,6 +273,7 @@ var (
 		SettingNameOrphanResourceAutoDeletion,
 		SettingNameOrphanResourceAutoDeletionGracePeriod,
 		SettingNameStorageNetwork,
+		SettingNameDataEngineIPFamily,
 		SettingNameEndpointNetworkForRWXVolume,
 		SettingNameFailedBackupTTL,
 		SettingNameRecurringSuccessfulJobsHistoryLimit,
@@ -437,6 +443,7 @@ var (
 		SettingNameOrphanResourceAutoDeletion:                               SettingDefinitionOrphanResourceAutoDeletion,
 		SettingNameOrphanResourceAutoDeletionGracePeriod:                    SettingDefinitionOrphanResourceAutoDeletionGracePeriod,
 		SettingNameStorageNetwork:                                           SettingDefinitionStorageNetwork,
+		SettingNameDataEngineIPFamily:                                       SettingDefinitionDataEngineIPFamily,
 		SettingNameEndpointNetworkForRWXVolume:                              SettingDefinitionEndpointNetworkForRWXVolume,
 		SettingNameFailedBackupTTL:                                          SettingDefinitionFailedBackupTTL,
 		SettingNameRecurringSuccessfulJobsHistoryLimit:                      SettingDefinitionRecurringSuccessfulJobsHistoryLimit,
@@ -1403,6 +1410,21 @@ var (
 		DataEngineSpecific: false,
 		Default:            CniNetworkNone,
 	}
+	SettingDefinitionDataEngineIPFamily = SettingDefinition{
+		DisplayName: "Data Engine IP Family",
+		Description: "Selects the preferred IP family for data-engine traffic. Leave blank to preserve legacy node-default address selection. Changing this setting requires all volumes to be detached so instance-manager pods can restart. With no configured storage network, the cluster network falls back to its sole usable address when the preferred family is unavailable. A configured storage network must provide an explicitly selected family; otherwise the affected InstanceManager reports a setting-sync failure.",
+		Category:    SettingCategoryDangerZone,
+		Type:        SettingTypeString,
+		Required:    false,
+		ReadOnly:    false,
+		Default:     "",
+		Choices: []any{
+			"",
+			DataEngineIPFamilyIPv4,
+			DataEngineIPFamilyIPv6,
+		},
+		DataEngineSpecific: false,
+	}
 
 	SettingDefinitionEndpointNetworkForRWXVolume = SettingDefinition{
 		DisplayName: "Endpoint Network for RWX Volume",
@@ -1586,7 +1608,7 @@ var (
 		DisplayName: "Snapshot Count Warning Threshold",
 		Description: "Warning threshold for the TooManySnapshots volume condition. " +
 			"The condition is triggered when the snapshot count exceeds the smaller of this value and snapshot-max-count." +
-			"Valid range: 2–250.",
+			"Valid range: 2-250.",
 		Category:           SettingCategorySnapshot,
 		Type:               SettingTypeInt,
 		Required:           true,
@@ -3060,7 +3082,7 @@ func CPUListToHexMask(cpuList string) (string, error) {
 // validated immediately against the valid range (0-maxCPU), so malicious inputs
 // like "0-1000000000" fail fast without large allocations.
 func parseCPUListToMask(cpuList string) (*big.Int, error) {
-	// Remove parentheses — they are optional grouping in DPDK lcores format
+	// Remove parentheses - they are optional grouping in DPDK lcores format
 	cpuList = strings.ReplaceAll(cpuList, "(", "")
 	cpuList = strings.ReplaceAll(cpuList, ")", "")
 	cpuList = strings.TrimSpace(cpuList)

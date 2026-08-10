@@ -315,3 +315,115 @@ func TestUpdateEngineImagePodLivenessProbesUsesDefaultValuesOnSettingError(t *te
 		t.Fatalf("unexpected failureThreshold: got %d, want %d", livenessProbe.FailureThreshold, datastore.PodLivenessProbeFailureThreshold)
 	}
 }
+
+func TestSyncDataEngineIPFamilyRequiresAllVolumesDetached(t *testing.T) {
+	const expectedReason = "failed to apply data-engine-ip-family setting to Longhorn components when there are attached volumes. It will be eventually applied"
+
+	tests := []struct {
+		name        string
+		volumeState longhorn.VolumeState
+		wantError   bool
+	}{
+		{
+			name:        "attached volume blocks setting sync",
+			volumeState: longhorn.VolumeStateAttached,
+			wantError:   true,
+		},
+		{
+			name:        "detached volume permits setting sync",
+			volumeState: longhorn.VolumeStateDetached,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kubeClient := fake.NewSimpleClientset()                   // nolint: staticcheck
+			lhClient := lhfake.NewSimpleClientset()                   // nolint: staticcheck
+			extensionClient := apiextensionsfake.NewSimpleClientset() // nolint: staticcheck
+
+			informerFactories := util.NewInformerFactories(TestNamespace, kubeClient, lhClient, controller.NoResyncPeriodFunc())
+			settingIndexer := informerFactories.LhInformerFactory.Longhorn().V1beta2().Settings().Informer().GetIndexer()
+			volumeIndexer := informerFactories.LhInformerFactory.Longhorn().V1beta2().Volumes().Informer().GetIndexer()
+			daemonSetIndexer := informerFactories.KubeNamespaceFilteredInformerFactory.Apps().V1().DaemonSets().Informer().GetIndexer()
+			podIndexer := informerFactories.KubeInformerFactory.Core().V1().Pods().Informer().GetIndexer()
+
+			ds := datastore.NewDataStore(TestNamespace, lhClient, kubeClient, extensionClient, informerFactories)
+			sc := &SettingController{
+				baseController: newBaseController("longhorn-setting", logrus.StandardLogger()),
+				ds:             ds,
+			}
+
+			for _, setting := range []*longhorn.Setting{
+				newSetting(string(types.SettingNameStorageNetwork), "longhorn-system/storage"),
+				newSetting(string(types.SettingNameEndpointNetworkForRWXVolume), string(types.CniNetworkNone)),
+			} {
+				created, err := lhClient.LonghornV1beta2().Settings(TestNamespace).Create(context.TODO(), setting, metav1.CreateOptions{})
+				if err != nil {
+					t.Fatalf("failed to create setting %s: %v", setting.Name, err)
+				}
+				if err := settingIndexer.Add(created); err != nil {
+					t.Fatalf("failed to index setting %s: %v", setting.Name, err)
+				}
+			}
+
+			volume := newVolume(TestVolumeName, 1)
+			volume.Namespace = TestNamespace
+			volume.Status.State = tc.volumeState
+			createdVolume, err := lhClient.LonghornV1beta2().Volumes(TestNamespace).Create(context.TODO(), volume, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("failed to create volume: %v", err)
+			}
+			if err := volumeIndexer.Add(createdVolume); err != nil {
+				t.Fatalf("failed to index volume: %v", err)
+			}
+
+			daemonSet := newEngineImageDaemonSet()
+			daemonSet.Name = types.CSIPluginName
+			daemonSet.Namespace = TestNamespace
+			createdDaemonSet, err := kubeClient.AppsV1().DaemonSets(TestNamespace).Create(context.TODO(), daemonSet, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("failed to create CSI daemonset: %v", err)
+			}
+			if err := daemonSetIndexer.Add(createdDaemonSet); err != nil {
+				t.Fatalf("failed to index CSI daemonset: %v", err)
+			}
+
+			pod := newPod(&corev1.PodStatus{Phase: corev1.PodRunning}, TestInstanceManagerName, TestNamespace, TestNode1)
+			pod.Labels = types.GetInstanceManagerComponentLabel()
+			pod.Annotations = map[string]string{
+				string(types.CNIAnnotationNetworks): "wrong-network",
+			}
+			createdPod, err := kubeClient.CoreV1().Pods(TestNamespace).Create(context.TODO(), pod, metav1.CreateOptions{})
+			if err != nil {
+				t.Fatalf("failed to create instance manager pod: %v", err)
+			}
+			if err := podIndexer.Add(createdPod); err != nil {
+				t.Fatalf("failed to index instance manager pod: %v", err)
+			}
+
+			actionCount := len(kubeClient.Actions())
+			err = sc.syncDangerZoneSettingsForManagedComponents(types.SettingNameDataEngineIPFamily)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected attached volume to block data-engine-ip-family setting sync")
+				}
+				invalidState, ok := err.(*types.ErrorInvalidState)
+				if !ok {
+					t.Fatalf("expected *types.ErrorInvalidState, got %T: %v", err, err)
+				}
+				if invalidState.Reason != expectedReason {
+					t.Fatalf("unexpected invalid-state reason: got %q, want %q", invalidState.Reason, expectedReason)
+				}
+			} else if err != nil {
+				t.Fatalf("expected detached volume to permit setting sync, got %v", err)
+			}
+
+			if actions := kubeClient.Actions()[actionCount:]; len(actions) != 0 {
+				t.Fatalf("setting sync performed unexpected Kubernetes actions: %v", actions)
+			}
+			if _, err := kubeClient.CoreV1().Pods(TestNamespace).Get(context.TODO(), pod.Name, metav1.GetOptions{}); err != nil {
+				t.Fatalf("setting sync deleted or failed to preserve instance manager pod: %v", err)
+			}
+		})
+	}
+}

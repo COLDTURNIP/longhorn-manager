@@ -291,6 +291,7 @@ func (sc *SettingController) syncDangerZoneSettingsForManagedComponents(settingN
 		types.SettingNameSystemManagedComponentsNodeSelector,
 		types.SettingNamePriorityClass,
 		types.SettingNameStorageNetwork,
+		types.SettingNameDataEngineIPFamily,
 	}
 
 	if slices.Contains(dangerSettingsRequiringAllVolumesDetached, settingName) {
@@ -323,6 +324,14 @@ func (sc *SettingController) syncDangerZoneSettingsForManagedComponents(settingN
 
 			if err := sc.updateCNI(funcPreupdate); err != nil {
 				return err
+			}
+		case types.SettingNameDataEngineIPFamily:
+			detached, err := sc.ds.AreAllVolumesDetachedState()
+			if err != nil {
+				return errors.Wrapf(err, "failed to check volume detachment for %v setting update", types.SettingNameDataEngineIPFamily)
+			}
+			if !detached {
+				return &types.ErrorInvalidState{Reason: "failed to apply data-engine-ip-family setting to Longhorn components when there are attached volumes. It will be eventually applied"}
 			}
 		}
 

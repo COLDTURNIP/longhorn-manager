@@ -708,7 +708,19 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 		return nil, errors.Wrapf(err, "failed to get pod for instance manager %v", im.Name)
 	}
 
-	instanceManagerStorageIP := ec.ds.GetIPFromPodByCNISetting(instanceManagerPod, types.SettingNameStorageNetwork)
+	dataEngineIPFamily := ""
+	if types.IsDataEngineV1(e.Spec.DataEngine) {
+		var valid bool
+		dataEngineIPFamily, _, valid = getDataEngineIPFamilyFromInstanceManagerPod(instanceManagerPod)
+		if !valid {
+			return nil, fmt.Errorf("invalid data engine IP family in instance manager pod %v", im.Name)
+		}
+	}
+
+	instanceManagerStorageIP, err := ec.ds.GetDataEngineIPFromPodByCNISetting(instanceManagerPod, types.SettingNameStorageNetwork)
+	if err != nil {
+		return nil, err
+	}
 	dataLayoutType := toIMRPCDataLayoutType(v.Spec.DataLayout.Type)
 
 	e.Status.Starting = true
@@ -732,6 +744,7 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 		UpgradeRequired:                  false,
 		InitiatorAddress:                 instanceManagerStorageIP,
 		TargetAddress:                    instanceManagerStorageIP,
+		DataEngineIPFamily:               dataEngineIPFamily,
 	})
 }
 
@@ -2025,7 +2038,7 @@ func cloneSnapshot(engine *longhorn.Engine, engineClientProxy engineapi.EngineCl
 		return errors.Wrapf(err, "failed to get volume %v for cloneSnapshot", engine.Spec.VolumeName)
 	}
 
-	// For v2 linked-clone, build the dst→src replica name map that was already
+	// For v2 linked-clone, build the dst->src replica name map that was already
 	// computed by the volume controller (replica.Spec.LinkedCloneSrcReplicaName).
 	// The webhook guarantees all running IMs support this API.
 	var dstReplicaSrcReplicaPairMap map[string]string
@@ -2450,7 +2463,7 @@ func (ec *EngineController) runRebuild(rc *rebuildContext) {
 		}
 	}
 
-	// Start rebuild — v1 and v2 diverge on the ReplicaAdd call.
+	// Start rebuild - v1 and v2 diverge on the ReplicaAdd call.
 	var replicaAddErr error
 	if types.IsDataEngineV2(rc.engine.Spec.DataEngine) {
 		ec.eventRecorder.Eventf(rc.currentEngine, corev1.EventTypeNormal, constant.EventReasonRebuilding,
@@ -2841,6 +2854,14 @@ func (ec *EngineController) UpgradeEngineInstance(e *longhorn.Engine, log *logru
 		log.Infof("The existing engine instance already has the new engine image %v", e.Spec.Image)
 		return nil
 	}
+	instanceManagerPod, err := ec.ds.GetPod(im.Name)
+	if err != nil {
+		return errors.Wrapf(err, "failed to get pod for instance manager %v", im.Name)
+	}
+	dataEngineIPFamily, _, valid := getDataEngineIPFamilyFromInstanceManagerPod(instanceManagerPod)
+	if !valid {
+		return fmt.Errorf("invalid data engine IP family in instance manager pod %v", im.Name)
+	}
 
 	engineInstance, err := c.EngineInstanceUpgrade(&engineapi.EngineInstanceUpgradeRequest{
 		Engine:                           e,
@@ -2850,6 +2871,7 @@ func (ec *EngineController) UpgradeEngineInstance(e *longhorn.Engine, log *logru
 		ReplicaFileSyncHTTPClientTimeout: fileSyncHTTPClientTimeout,
 		DataLocality:                     v.Spec.DataLocality,
 		EngineCLIAPIVersion:              cliAPIVersion,
+		DataEngineIPFamily:               dataEngineIPFamily,
 	})
 	if err != nil {
 		return err
