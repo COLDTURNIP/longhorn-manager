@@ -51,6 +51,7 @@ import (
 var (
 	mountPropagationHostToContainer = corev1.MountPropagationHostToContainer
 )
+var errDataEngineIPFamilyBlockedByAttachedVolumes = errors.New("preferred data-engine IP-family rollout is blocked while volumes are attached")
 
 type InstanceManagerController struct {
 	*baseController
@@ -225,7 +226,8 @@ func (imc *InstanceManagerController) isResponsibleForSetting(obj interface{}) b
 		types.SettingName(setting.Name) == types.SettingNameDataEngineIobufSmallPoolSize ||
 		types.SettingName(setting.Name) == types.SettingNameOrphanResourceAutoDeletion ||
 		types.SettingName(setting.Name) == types.SettingNameDataEngineHugepageEnabled ||
-		types.SettingName(setting.Name) == types.SettingNameDataEngineMemorySize
+		types.SettingName(setting.Name) == types.SettingNameDataEngineMemorySize ||
+		types.SettingName(setting.Name) == types.SettingNamePreferredDataEngineIPFamily
 }
 
 func isInstanceManagerPod(obj interface{}) bool {
@@ -415,6 +417,14 @@ func (imc *InstanceManagerController) syncInstanceManager(key string) (err error
 		return err
 	}
 
+	blocked, err := imc.syncInstanceManagerIPFamily(im)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return enqueueAfterDelay(imc.queue, im, time.Second)
+	}
+
 	if err := imc.syncOrphans(im); err != nil {
 		return err
 	}
@@ -445,11 +455,161 @@ func (imc *InstanceManagerController) canProceedWithInstanceManagerSync(currentI
 
 	defaultInstanceManagerImage, err := imc.ds.GetSettingValueExisted(types.SettingNameDefaultInstanceManagerImage)
 	if err != nil {
+
 		return false, err
 	}
 
 	// Only active the sync when the default instance manager image is used.
 	return currentIm.Spec.Image == defaultInstanceManagerImage, nil
+}
+func (imc *InstanceManagerController) syncInstanceManagerIPFamily(im *longhorn.InstanceManager) (bool, error) {
+	enabledSetting, ok := getDataEngineEnabledSettingNameForIPFamily(im.Spec.DataEngine)
+	if !ok {
+		return false, nil
+	}
+	enabled, err := imc.ds.GetSettingAsBool(enabledSetting)
+	if err != nil {
+		return false, err
+	}
+	if !enabled {
+		return false, nil
+	}
+	if im.Status.CurrentState != longhorn.InstanceManagerStateRunning {
+		return false, nil
+	}
+
+	setting, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return false, err
+	}
+	desired := normalizePreferredDataEngineIPFamily(setting.Value)
+
+	pod, err := imc.ds.GetPodRO(imc.namespace, im.Name)
+	if err != nil {
+		return false, err
+	}
+	if pod == nil || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
+		imc.markInstanceManagerIPFamilyUnsynced(im, "instance manager Pod is not running with the selected IP family")
+		return true, nil
+	}
+
+	isReady := true
+	for _, status := range pod.Status.ContainerStatuses {
+		isReady = isReady && status.Ready
+	}
+	if !isReady {
+		imc.markInstanceManagerIPFamilyUnsynced(im, "instance manager Pod is not ready with the selected IP family")
+		return true, nil
+	}
+
+	family, specified, valid, found := getInstanceManagerIPFamilyFromPod(pod)
+	if !found || !valid {
+		imc.markInstanceManagerIPFamilyUnsynced(im, "instance manager Pod has invalid IP family arguments")
+		return true, nil
+	}
+	matches := (desired == types.DataEngineIPFamilyDefault && !specified) ||
+		(desired != types.DataEngineIPFamilyDefault && specified && family == desired)
+	if !matches {
+		imc.markInstanceManagerIPFamilyUnsynced(im, "instance manager Pod IP family arguments do not match the preferred setting")
+		return true, nil
+	}
+
+	ip, err := imc.ds.GetDataEngineIPFromPodForIPFamily(pod, desired)
+	if err != nil {
+		im.Status.IP = ""
+		imc.markInstanceManagerIPFamilyUnsynced(im, fmt.Sprintf("failed to resolve instance manager endpoint for the target IP family: %v", err))
+		return true, nil
+	}
+	if err := imc.ds.ValidateDataEngineIPFamilyForStorageNetwork(pod, desired); err != nil {
+		var invalidState *types.ErrorInvalidState
+		if !errors.As(err, &invalidState) {
+			return false, err
+		}
+		im.Status.IP = ""
+		imc.markInstanceManagerIPFamilyUnsynced(im, fmt.Sprintf("failed to resolve instance manager endpoint for the target storage network: %v", invalidState.Reason))
+		return true, nil
+	}
+	im.Status.IP = ip
+	im.Status.IPFamily = ptr.To(desired)
+	im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+		longhorn.InstanceManagerConditionTypeSettingSynced,
+		longhorn.ConditionStatusTrue, "", "")
+	return false, nil
+}
+func getInstanceManagerIPFamilyFromPod(pod *corev1.Pod) (family string, specified, valid, found bool) {
+	if pod == nil {
+		return "", false, true, false
+	}
+	for _, container := range pod.Spec.Containers {
+		if container.Name != "instance-manager" {
+			continue
+		}
+		args := append([]string{}, container.Command...)
+		args = append(args, container.Args...)
+		family, specified, valid = types.ParseDataEngineIPFamilyArgs(args)
+		return family, specified, valid, true
+	}
+	return "", false, true, false
+}
+
+func (imc *InstanceManagerController) isSettingDataEngineIPFamilySynced(setting *longhorn.Setting, pod *corev1.Pod) (bool, error) {
+	family, specified, valid, found := getInstanceManagerIPFamilyFromPod(pod)
+	if !found || !valid {
+		return false, nil
+	}
+	desired := normalizePreferredDataEngineIPFamily(setting.Value)
+	matches := (desired == types.DataEngineIPFamilyDefault && !specified) ||
+		(desired != types.DataEngineIPFamilyDefault && specified && family == desired)
+	if matches {
+		return true, nil
+	}
+	detached, err := imc.ds.AreAllVolumesDetachedState()
+	if err != nil {
+		return false, err
+	}
+	if !detached {
+		if imc.baseController != nil && imc.queue != nil {
+			imc.queue.AddAfter(pod.Namespace+"/"+pod.Name, time.Second)
+		}
+		return false, errDataEngineIPFamilyBlockedByAttachedVolumes
+	}
+	return false, nil
+}
+
+func validatePreferredDataEngineIPFamily(family string) error {
+	if family != types.DataEngineIPFamilyDefault &&
+		family != types.DataEngineIPFamilyIPv4 &&
+		family != types.DataEngineIPFamilyIPv6 {
+		return fmt.Errorf("invalid %v setting value %q", types.SettingNamePreferredDataEngineIPFamily, family)
+	}
+	return nil
+}
+
+func (imc *InstanceManagerController) getPreferredDataEngineIPFamily() (string, error) {
+	setting, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return "", err
+	}
+	family := normalizePreferredDataEngineIPFamily(setting.Value)
+	if err := validatePreferredDataEngineIPFamily(family); err != nil {
+		return "", err
+	}
+	return family, nil
+}
+
+func appendInstanceManagerIPFamilyArgs(args []string, family string) []string {
+	if family == types.DataEngineIPFamilyIPv4 || family == types.DataEngineIPFamilyIPv6 {
+		return append(args, "--ip-family", family)
+	}
+	return args
+}
+
+func (imc *InstanceManagerController) markInstanceManagerIPFamilyUnsynced(im *longhorn.InstanceManager, reason string) {
+	im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+		longhorn.InstanceManagerConditionTypeSettingSynced,
+		longhorn.ConditionStatusFalse,
+		longhorn.InstanceManagerConditionReasonSettingNotSynced,
+		reason)
 }
 
 // syncStatusWithPod updates the InstanceManager based on the pod current phase only,
@@ -473,7 +633,6 @@ func (imc *InstanceManagerController) syncStatusWithPod(im *longhorn.InstanceMan
 		im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypePodReady,
 			longhorn.ConditionStatusFalse, longhorn.InstanceManagerConditionReasonPodNotFound, "")
 		if im.Status.CurrentState == "" || im.Status.CurrentState == longhorn.InstanceManagerStateStopped {
-			// This state is for newly created InstanceManagers only.
 			im.Status.CurrentState = longhorn.InstanceManagerStateStopped
 			return nil
 		}
@@ -482,7 +641,6 @@ func (imc *InstanceManagerController) syncStatusWithPod(im *longhorn.InstanceMan
 		return nil
 	}
 
-	// By design instance manager pods should not be terminated.
 	if pod.DeletionTimestamp != nil {
 		imc.logger.Warnf("Instance manager pod %v is being deleted, updating the instance manager state from %s to error", im.Name, im.Status.CurrentState)
 		im.Status.CurrentState = longhorn.InstanceManagerStateError
@@ -491,20 +649,34 @@ func (imc *InstanceManagerController) syncStatusWithPod(im *longhorn.InstanceMan
 		return nil
 	}
 
-	// Blindly update the state based on the pod phase.
 	switch pod.Status.Phase {
 	case corev1.PodPending:
 		im.Status.CurrentState = longhorn.InstanceManagerStateStarting
 	case corev1.PodRunning:
 		isReady := true
-		// Make sure readiness probe has passed.
 		for _, st := range pod.Status.ContainerStatuses {
 			isReady = isReady && st.Ready
 		}
 
 		if isReady {
 			im.Status.CurrentState = longhorn.InstanceManagerStateRunning
-			im.Status.IP = pod.Status.PodIP
+			ipFamily := types.DataEngineIPFamilyDefault
+			if im.Status.IPFamily != nil {
+				ipFamily = normalizePreferredDataEngineIPFamily(*im.Status.IPFamily)
+			}
+			ip, err := imc.ds.GetDataEngineIPFromPodForIPFamily(pod, ipFamily)
+			if err != nil {
+				var invalidState *types.ErrorInvalidState
+				if !errors.As(err, &invalidState) {
+					return err
+				}
+				im.Status.IP = ""
+				im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypeSettingSynced,
+					longhorn.ConditionStatusFalse, longhorn.InstanceManagerConditionReasonSettingNotSynced,
+					fmt.Sprintf("Settings [%s] are not synced: %s", types.SettingNamePreferredDataEngineIPFamily, invalidState.Reason))
+			} else {
+				im.Status.IP = ip
+			}
 			im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypePodReady,
 				longhorn.ConditionStatusTrue, longhorn.InstanceManagerConditionReasonPodRunning, "")
 		} else {
@@ -520,6 +692,71 @@ func (imc *InstanceManagerController) syncStatusWithPod(im *longhorn.InstanceMan
 	}
 
 	return nil
+}
+
+func (imc *InstanceManagerController) checkDataEngineIPFamilyForStorageNetwork(im *longhorn.InstanceManager, pod *corev1.Pod) (blocked bool, err error) {
+	if pod == nil {
+		return false, nil
+	}
+	familySetting, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return false, err
+	}
+	familySynced, err := imc.isSettingDataEngineIPFamilySynced(familySetting, pod)
+	if err != nil {
+		if errors.Is(err, errDataEngineIPFamilyBlockedByAttachedVolumes) {
+			return false, nil
+		}
+		var invalidState *types.ErrorInvalidState
+		if !errors.As(err, &invalidState) {
+			return false, err
+		}
+		im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+			longhorn.InstanceManagerConditionTypeSettingSynced,
+			longhorn.ConditionStatusFalse,
+			longhorn.InstanceManagerConditionReasonSettingNotSynced,
+			fmt.Sprintf("Settings [%s] are not synced: %s", types.SettingNamePreferredDataEngineIPFamily, invalidState.Reason))
+		return true, nil
+	}
+	if !familySynced {
+		detached, err := imc.ds.AreAllVolumesDetachedState()
+		if err != nil {
+			return false, err
+		}
+		return !detached, nil
+	}
+
+	storageNetworkSetting, err := imc.ds.GetSettingWithAutoFillingRO(types.SettingNameStorageNetwork)
+	if err != nil {
+		return false, err
+	}
+	if storageNetworkSetting.Value == types.CniNetworkNone {
+		return false, nil
+	}
+
+	storageNetworkSynced, err := imc.isSettingStorageNetworkSynced(storageNetworkSetting, pod)
+	if err != nil {
+		return false, err
+	}
+	if !storageNetworkSynced || im.Status.IPFamily == nil || normalizePreferredDataEngineIPFamily(*im.Status.IPFamily) == types.DataEngineIPFamilyDefault {
+		return false, nil
+	}
+
+	err = imc.ds.ValidateDataEngineIPFamilyForStorageNetwork(pod, normalizePreferredDataEngineIPFamily(*im.Status.IPFamily))
+	if err == nil {
+		return false, nil
+	}
+
+	var invalidState *types.ErrorInvalidState
+	if !errors.As(err, &invalidState) {
+		return false, err
+	}
+	im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+		longhorn.InstanceManagerConditionTypeSettingSynced,
+		longhorn.ConditionStatusFalse,
+		longhorn.InstanceManagerConditionReasonSettingNotSynced,
+		fmt.Sprintf("Settings [%s] are not synced: %s", types.SettingNamePreferredDataEngineIPFamily, invalidState.Reason))
+	return true, nil
 }
 
 func (imc *InstanceManagerController) syncStatusWithNode(im *longhorn.InstanceManager) error {
@@ -656,7 +893,19 @@ func (imc *InstanceManagerController) syncLogSettingsToInstanceManagerPod(im *lo
 func (imc *InstanceManagerController) handlePod(im *longhorn.InstanceManager) error {
 	log := getLoggerForInstanceManager(imc.logger, im)
 
-	err := imc.annotateCASafeToEvict(im)
+	pod, err := imc.ds.GetPodRO(imc.namespace, im.Name)
+	if err != nil {
+		return errors.Wrapf(err, "cannot get pod for instance manager %v", im.Name)
+	}
+	blocked, err := imc.checkDataEngineIPFamilyForStorageNetwork(im, pod)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return nil
+	}
+
+	err = imc.annotateCASafeToEvict(im)
 	if err != nil {
 		return err
 	}
@@ -834,11 +1083,18 @@ func (imc *InstanceManagerController) areDangerZoneSettingsSyncedToIMPod(im *lon
 			isSettingSynced, err = imc.isSettingDataEngineSynced(settingName, im)
 		case types.SettingNameInstanceManagerPodLivenessProbeTimeout:
 			isSettingSynced, err = imc.isSettingInstanceManagerPodLivenessProbeTimeoutSynced(setting, pod)
-		case types.SettingNameLogPath:
-			// TODO: Support log path for v1 data engine.
-			if types.IsDataEngineV2(im.Spec.DataEngine) {
-				isSettingSynced, err = imc.isSettingLogPathSynced(setting, pod)
+		case types.SettingNamePreferredDataEngineIPFamily:
+			isSettingSynced, err = imc.isSettingDataEngineIPFamilySynced(setting, pod)
+			if errors.Is(err, errDataEngineIPFamilyBlockedByAttachedVolumes) {
+				im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+					longhorn.InstanceManagerConditionTypeSettingSynced,
+					longhorn.ConditionStatusFalse,
+					longhorn.InstanceManagerConditionReasonSettingBlockedByAttachedVolumes,
+					errDataEngineIPFamilyBlockedByAttachedVolumes.Error())
+				return true, nil, false, false, nil
 			}
+		case types.SettingNameLogPath:
+			isSettingSynced, err = imc.isSettingLogPathSynced(setting, pod)
 		case types.SettingNameDataEngineInterruptModeEnabled:
 			isSettingSynced, err = imc.isSettingInterruptModeEnabledSynced(setting, im)
 		case types.SettingNameDataEngineIobufLargePoolSize:
@@ -1989,6 +2245,10 @@ func (imc *InstanceManagerController) createInstanceManagerPodSpec(im *longhorn.
 	if err != nil {
 		return nil, err
 	}
+	ipFamily, err := imc.getPreferredDataEngineIPFamily()
+	if err != nil {
+		return nil, err
+	}
 
 	if types.IsDataEngineV2(dataEngine) {
 		// spdk_tgt doesn't support log level option, so we don't need to pass the log level to the instance manager.
@@ -2081,9 +2341,11 @@ func (imc *InstanceManagerController) createInstanceManagerPodSpec(im *longhorn.
 		args = append(args,
 			"--longhorn-control-path", types.DefaultControlPath,
 			"--enable-spdk", "--debug",
-			"daemon",
+			"daemon")
+		args = appendInstanceManagerIPFamilyArgs(args, ipFamily)
+		args = append(args,
 			"--spdk-enabled",
-			"--listen", fmt.Sprintf("0.0.0.0:%d", engineapi.InstanceManagerProcessManagerServiceDefaultPort))
+			"--listen", fmt.Sprintf(":%d", engineapi.InstanceManagerProcessManagerServiceDefaultPort))
 
 		interruptMode, err := imc.ds.GetSettingValueExistedByDataEngine(types.SettingNameDataEngineInterruptModeEnabled, dataEngine)
 		if err != nil {
@@ -2144,8 +2406,11 @@ func (imc *InstanceManagerController) createInstanceManagerPodSpec(im *longhorn.
 		}
 	} else {
 		podSpec.Spec.Containers[0].Args = []string{
-			"instance-manager", "--debug", "daemon", "--listen", fmt.Sprintf(":%d", engineapi.InstanceManagerProcessManagerServiceDefaultPort),
+			"instance-manager", "--debug", "daemon",
 		}
+		podSpec.Spec.Containers[0].Args = appendInstanceManagerIPFamilyArgs(podSpec.Spec.Containers[0].Args, ipFamily)
+		podSpec.Spec.Containers[0].Args = append(podSpec.Spec.Containers[0].Args,
+			"--listen", fmt.Sprintf(":%d", engineapi.InstanceManagerProcessManagerServiceDefaultPort))
 	}
 
 	podProbeTimeout, err := imc.ds.GetSettingAsInt(types.SettingNameInstanceManagerPodLivenessProbeTimeout)

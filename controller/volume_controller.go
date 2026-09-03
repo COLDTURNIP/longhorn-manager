@@ -2235,6 +2235,26 @@ func (c *VolumeController) requestRemountIfFileSystemReadOnly(v *longhorn.Volume
 	}
 }
 
+func (c *VolumeController) isDataEngineIPFamilySettingApplied(v *longhorn.Volume) (bool, error) {
+	setting, err := c.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return false, err
+	}
+	if !setting.Status.Applied {
+		return false, nil
+	}
+
+	im, err := c.ds.GetRunningInstanceManagerByNodeRO(v.Spec.NodeID, v.Spec.DataEngine)
+	if err != nil {
+		return false, err
+	}
+	appliedFamily, initialized := engineapi.GetAppliedIPFamily(im)
+	if !initialized {
+		return false, nil
+	}
+	return normalizePreferredDataEngineIPFamily(appliedFamily) == normalizePreferredDataEngineIPFamily(setting.Value), nil
+}
+
 func (c *VolumeController) reconcileAttachDetachStateMachine(v *longhorn.Volume, e *longhorn.Engine, rs map[string]*longhorn.Replica, efs map[string]*longhorn.EngineFrontend, isNewVolume bool, log *logrus.Entry) error {
 	// Here is the AD state machine graph
 	// https://github.com/longhorn/longhorn/blob/master/enhancements/assets/images/longhorn-volumeattachment/volume-controller-ad-logic.png
@@ -2296,11 +2316,28 @@ func (c *VolumeController) reconcileAttachDetachStateMachine(v *longhorn.Volume,
 					c.eventRecorder.Eventf(v, corev1.EventTypeNormal, constant.EventReasonDetached, "volume %v has been detached", v.Name)
 				}
 			case longhorn.VolumeStateDetached:
+				applied, err := c.isDataEngineIPFamilySettingApplied(v)
+				if err != nil {
+					return err
+				}
+				if !applied {
+					log.Infof("Waiting to attach volume %v while %v is unapplied or instance manager family is not observed", v.Name, types.SettingNamePreferredDataEngineIPFamily)
+					return nil
+				}
 				if err := c.openVolumeDependentResources(v, e, rs, efs, log); err != nil {
 					return err
 				}
 				v.Status.State = longhorn.VolumeStateAttaching
 			case longhorn.VolumeStateAttaching:
+				applied, err := c.isDataEngineIPFamilySettingApplied(v)
+				if err != nil {
+					return err
+				}
+				if !applied {
+					c.closeVolumeDependentResources(v, e, rs, efs)
+					v.Status.State = longhorn.VolumeStateDetaching
+					return nil
+				}
 				if err := c.openVolumeDependentResources(v, e, rs, efs, log); err != nil {
 					return err
 				}
@@ -7239,9 +7276,21 @@ func (c *VolumeController) enqueueSettingChange(obj interface{}) {
 		}
 	}
 
+	if setting.Name == string(types.SettingNamePreferredDataEngineIPFamily) {
+		vs, err := c.ds.ListVolumesRO()
+		if err != nil {
+			utilruntime.HandleError(fmt.Errorf("failed to list volumes when enqueuing setting %v: %v", setting.Name, err))
+			return
+		}
+		for _, v := range vs {
+			c.enqueueVolume(v)
+		}
+		return
+	}
+
 	vs, err := c.ds.ListVolumesFollowsGlobalSettingsRO(map[string]bool{setting.Name: true})
 	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("failed to list volumes when enqueuing setting %v: %v", types.SettingNameRemoveSnapshotsDuringFilesystemTrim, err))
+		utilruntime.HandleError(fmt.Errorf("failed to list volumes when enqueuing setting %v: %v", setting.Name, err))
 		return
 	}
 	for _, v := range vs {

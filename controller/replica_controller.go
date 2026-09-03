@@ -426,6 +426,13 @@ func (rc *ReplicaController) CreateInstance(obj interface{}) (*longhorn.Instance
 	if err != nil {
 		return nil, err
 	}
+	familySetting, err := rc.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return nil, err
+	}
+	if v.Status.State == longhorn.VolumeStateDetached && !familySetting.Status.Applied {
+		return nil, nil
+	}
 
 	cliAPIVersion, err := rc.ds.GetDataEngineImageCLIAPIVersion(r.Spec.Image, r.Spec.DataEngine)
 	if err != nil {

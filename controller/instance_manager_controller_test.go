@@ -545,6 +545,10 @@ func (s *TestSuite) TestSyncInstanceManager(c *C) {
 
 		updatedIM, err := lhClient.LonghornV1beta2().InstanceManagers(im.Namespace).Get(context.TODO(), im.Name, metav1.GetOptions{})
 		c.Assert(err, IsNil)
+		if tc.expectedStatus.CurrentState == longhorn.InstanceManagerStateRunning {
+			appliedFamily := types.DataEngineIPFamilyDefault
+			tc.expectedStatus.IPFamily = &appliedFamily
+		}
 		for i, condition := range updatedIM.Status.Conditions {
 			tc.expectedStatus.Conditions[i].LastTransitionTime = condition.LastTransitionTime
 			tc.expectedStatus.Conditions[i].LastProbeTime = condition.LastProbeTime

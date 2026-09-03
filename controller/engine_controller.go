@@ -652,6 +652,10 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 	if e.Status.InstanceManagerName != im.Name {
 		return nil, fmt.Errorf("found instance manager name conflict %s vs %s during engine instance creation", e.Status.InstanceManagerName, im.Name)
 	}
+	if err := engineapi.CheckInstanceManagerCompatibility(im.Status.APIMinVersion, im.Status.APIVersion); err != nil {
+		return nil, errors.Wrapf(err, "instance manager %v is not compatible with engine instance creation", im.Name)
+	}
+
 
 	c, err := engineapi.NewInstanceManagerClient(im, false)
 	if err != nil {
@@ -697,10 +701,22 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 	if err != nil {
 		return nil, err
 	}
+	familySetting, err := ec.ds.GetSettingWithAutoFillingRO(types.SettingNamePreferredDataEngineIPFamily)
+	if err != nil {
+		return nil, err
+	}
+	if v.Status.State == longhorn.VolumeStateDetached && !familySetting.Status.Applied {
+		return nil, nil
+	}
 
 	cliAPIVersion, err := ec.ds.GetDataEngineImageCLIAPIVersion(e.Spec.Image, e.Spec.DataEngine)
 	if err != nil {
 		return nil, err
+	}
+
+	ipFamily, initialized := engineapi.GetAppliedIPFamily(im)
+	if !initialized {
+		return nil, nil
 	}
 
 	instanceManagerPod, err := ec.ds.GetPod(im.Name)
@@ -708,7 +724,11 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 		return nil, errors.Wrapf(err, "failed to get pod for instance manager %v", im.Name)
 	}
 
-	instanceManagerStorageIP := ec.ds.GetIPFromPodByCNISetting(instanceManagerPod, types.SettingNameStorageNetwork)
+	instanceManagerStorageIP, err := ec.ds.GetDataEngineIPFromPodByCNISettingForIPFamily(
+		instanceManagerPod, types.SettingNameStorageNetwork, ipFamily)
+	if err != nil {
+		return nil, err
+	}
 	dataLayoutType := toIMRPCDataLayoutType(v.Spec.DataLayout.Type)
 
 	e.Status.Starting = true
@@ -2095,7 +2115,7 @@ func cloneSnapshot(engine *longhorn.Engine, engineClientProxy engineapi.EngineCl
 		return errors.Wrapf(err, "failed to get volume %v for cloneSnapshot", engine.Spec.VolumeName)
 	}
 
-	// For v2 linked-clone, build the dst→src replica name map that was already
+	// For v2 linked-clone, build the dst->src replica name map that was already
 	// computed by the volume controller (replica.Spec.LinkedCloneSrcReplicaName).
 	// The webhook guarantees all running IMs support this API.
 	var dstReplicaSrcReplicaPairMap map[string]string
@@ -2520,7 +2540,7 @@ func (ec *EngineController) runRebuild(rc *rebuildContext) {
 		}
 	}
 
-	// Start rebuild — v1 and v2 diverge on the ReplicaAdd call.
+	// Start rebuild - v1 and v2 diverge on the ReplicaAdd call.
 	var replicaAddErr error
 	if types.IsDataEngineV2(rc.engine.Spec.DataEngine) {
 		ec.eventRecorder.Eventf(rc.currentEngine, corev1.EventTypeNormal, constant.EventReasonRebuilding,

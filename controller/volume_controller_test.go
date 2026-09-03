@@ -3455,6 +3455,12 @@ func (s *TestSuite) runTestCases(c *C, testCases map[string]*VolumeTestCase) {
 			metav1.CreateOptions{},
 		)
 		c.Assert(err, IsNil)
+		appliedIPFamily := types.DataEngineIPFamilyDefault
+		for _, instanceManager := range []*longhorn.InstanceManager{instanceManager1, instanceManager2} {
+			instanceManager.Status.IPFamily = &appliedIPFamily
+			instanceManager.Status.Conditions = types.SetCondition(instanceManager.Status.Conditions,
+				longhorn.InstanceManagerConditionTypeSettingSynced, longhorn.ConditionStatusTrue, "", "")
+		}
 		imIndexer := informerFactories.LhInformerFactory.Longhorn().V1beta2().InstanceManagers().Informer().GetIndexer()
 		err = imIndexer.Add(instanceManager1)
 		c.Assert(err, IsNil)
@@ -3550,6 +3556,12 @@ func (s *TestSuite) runTestCases(c *C, testCases map[string]*VolumeTestCase) {
 			lhClient.LonghornV1beta2().Settings(TestNamespace).Create(context.TODO(), s, metav1.CreateOptions{})
 		c.Assert(err, IsNil)
 		err = sIndexer.Add(setting)
+		c.Assert(err, IsNil)
+		familySetting := newSetting(string(types.SettingNamePreferredDataEngineIPFamily), types.DataEngineIPFamilyDefault)
+		familySetting.Status.Applied = true
+		familySetting, err = lhClient.LonghornV1beta2().Settings(TestNamespace).Create(context.TODO(), familySetting, metav1.CreateOptions{})
+		c.Assert(err, IsNil)
+		err = sIndexer.Add(familySetting)
 		c.Assert(err, IsNil)
 
 		// Optional: Set snapshot global setting if provided by test case
