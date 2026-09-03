@@ -453,7 +453,7 @@ var SettingsRelatedToVolume = map[string]string{
 	string(SettingNameReplicaAutoBalance):                  LonghornLabelValueIgnored,
 	string(SettingNameSnapshotDataIntegrity):               LonghornLabelValueIgnored,
 	string(SettingNameRemoveSnapshotsDuringFilesystemTrim): LonghornLabelValueIgnored,
-	string(SettingNamePreferredDataEngineIPFamily):       LonghornLabelValueIgnored,
+	string(SettingNamePreferredDataEngineIPFamily):         LonghornLabelValueIgnored,
 }
 
 type NotFoundError struct {

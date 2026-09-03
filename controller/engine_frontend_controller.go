@@ -662,7 +662,6 @@ func (efc *EngineFrontendController) CreateInstance(obj interface{}) (*longhorn.
 		return nil, errors.Wrapf(err, "instance manager %v is not compatible with engine frontend instance creation", im.Name)
 	}
 
-
 	c, err := engineapi.NewInstanceManagerClient(im, false)
 	if err != nil {
 		return nil, err

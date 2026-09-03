@@ -656,7 +656,6 @@ func (ec *EngineController) CreateInstance(obj interface{}) (*longhorn.InstanceP
 		return nil, errors.Wrapf(err, "instance manager %v is not compatible with engine instance creation", im.Name)
 	}
 
-
 	c, err := engineapi.NewInstanceManagerClient(im, false)
 	if err != nil {
 		return nil, err
