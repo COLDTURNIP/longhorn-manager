@@ -1213,18 +1213,6 @@ func getPrimaryDataEngineIP(pod *corev1.Pod) string {
 	if pod == nil {
 		return ""
 	}
-	status := pod.Annotations[string(types.CNIAnnotationNetworkStatus)]
-	if status == "" {
-		status = pod.Annotations[string(types.CNIAnnotationNetworksStatus)]
-	}
-	var networks []types.CniNetwork
-	if status != "" && json.Unmarshal([]byte(status), &networks) == nil {
-		for _, cniNetwork := range networks {
-			if cniNetwork.Interface == "lhnet1" && len(cniNetwork.IPs) > 0 {
-				return cniNetwork.IPs[0]
-			}
-		}
-	}
 	return pod.Status.PodIP
 }
 

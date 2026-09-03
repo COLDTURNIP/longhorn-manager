@@ -10,7 +10,7 @@ import (
 	"github.com/longhorn/longhorn-manager/types"
 )
 
-func TestPrimaryDataEngineIPPrefersFirstLHNet1Address(t *testing.T) {
+func TestPrimaryDataEngineIPUsesPodPrimaryAddress(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
@@ -19,7 +19,7 @@ func TestPrimaryDataEngineIPPrefersFirstLHNet1Address(t *testing.T) {
 		},
 		Status: corev1.PodStatus{PodIP: "10.0.0.2"},
 	}
-	require.Equal(t, "2001:db8::20", getPrimaryDataEngineIP(pod))
+	require.Equal(t, "10.0.0.2", getPrimaryDataEngineIP(pod))
 
 	pod.Annotations = nil
 	require.Equal(t, "10.0.0.2", getPrimaryDataEngineIP(pod))
