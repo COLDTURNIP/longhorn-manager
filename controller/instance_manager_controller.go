@@ -661,21 +661,31 @@ func (imc *InstanceManagerController) syncStatusWithPod(im *longhorn.InstanceMan
 		if isReady {
 			im.Status.CurrentState = longhorn.InstanceManagerStateRunning
 			ipFamily := types.DataEngineIPFamilyDefault
-			if im.Status.IPFamily != nil {
-				ipFamily = normalizePreferredDataEngineIPFamily(*im.Status.IPFamily)
-			}
-			ip, err := imc.ds.GetDataEngineIPFromPodForIPFamily(pod, ipFamily)
-			if err != nil {
-				var invalidState *types.ErrorInvalidState
-				if !errors.As(err, &invalidState) {
-					return err
-				}
+			podFamily, specified, valid, found := getInstanceManagerIPFamilyFromPod(pod)
+			if !found || !valid {
 				im.Status.IP = ""
-				im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypeSettingSynced,
-					longhorn.ConditionStatusFalse, longhorn.InstanceManagerConditionReasonSettingNotSynced,
-					fmt.Sprintf("Settings [%s] are not synced: %s", types.SettingNamePreferredDataEngineIPFamily, invalidState.Reason))
+				im.Status.Conditions = types.SetCondition(im.Status.Conditions,
+					longhorn.InstanceManagerConditionTypeSettingSynced,
+					longhorn.ConditionStatusFalse,
+					longhorn.InstanceManagerConditionReasonSettingNotSynced,
+					"instance manager Pod has invalid IP family arguments")
 			} else {
-				im.Status.IP = ip
+				if specified {
+					ipFamily = podFamily
+				}
+				ip, err := imc.ds.GetDataEngineIPFromPodForIPFamily(pod, ipFamily)
+				if err != nil {
+					var invalidState *types.ErrorInvalidState
+					if !errors.As(err, &invalidState) {
+						return err
+					}
+					im.Status.IP = ""
+					im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypeSettingSynced,
+						longhorn.ConditionStatusFalse, longhorn.InstanceManagerConditionReasonSettingNotSynced,
+						fmt.Sprintf("Settings [%s] are not synced: %s", types.SettingNamePreferredDataEngineIPFamily, invalidState.Reason))
+				} else {
+					im.Status.IP = ip
+				}
 			}
 			im.Status.Conditions = types.SetCondition(im.Status.Conditions, longhorn.InstanceManagerConditionTypePodReady,
 				longhorn.ConditionStatusTrue, longhorn.InstanceManagerConditionReasonPodRunning, "")

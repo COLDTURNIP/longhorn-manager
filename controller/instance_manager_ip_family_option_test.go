@@ -3,6 +3,7 @@ package controller
 import (
 	"testing"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,7 +52,11 @@ func newInstanceManagerIPFamilyOptionController(t *testing.T, family string) *In
 	ds := datastore.NewDataStore(TestNamespace, lhClient, kubeClient, extensionsClient, informerFactories)
 	require.NoError(t, ds.SettingInformer.GetStore().Add(newSetting(string(types.SettingNamePreferredDataEngineIPFamily), family)))
 	require.NoError(t, ds.SettingInformer.GetStore().Add(newSetting(string(types.SettingNameV1DataEngine), "true")))
-	return &InstanceManagerController{namespace: TestNamespace, ds: ds}
+	return &InstanceManagerController{
+		baseController: &baseController{logger: logrus.New().WithField("test", "ip-family")},
+		namespace:      TestNamespace,
+		ds:             ds,
+	}
 }
 
 func newInstanceManagerIPFamilyOptionPod(name string, family string) *corev1.Pod {
@@ -111,6 +116,26 @@ func TestSyncInstanceManagerIPFamilyUsesRunningReadyPodOption(t *testing.T) {
 	require.NotNil(t, im.Status.IPFamily)
 	require.Equal(t, types.DataEngineIPFamilyIPv6, *im.Status.IPFamily)
 	require.Equal(t, "2001:db8::10", im.Status.IP)
+}
+
+func TestSyncStatusWithPodUsesCurrentOptionOverStaleStatus(t *testing.T) {
+	imc := newInstanceManagerIPFamilyOptionController(t, types.DataEngineIPFamilyIPv6)
+	pod := newInstanceManagerIPFamilyOptionPod(TestInstanceManagerName, types.DataEngineIPFamilyIPv6)
+	require.NoError(t, imc.ds.PodInformer.GetStore().Add(pod))
+
+	oldFamily := types.DataEngineIPFamilyIPv4
+	im := &longhorn.InstanceManager{
+		ObjectMeta: metav1.ObjectMeta{Name: TestInstanceManagerName, Namespace: TestNamespace},
+		Status: longhorn.InstanceManagerStatus{
+			CurrentState: longhorn.InstanceManagerStateStarting,
+			IPFamily:     &oldFamily,
+		},
+	}
+
+	require.NoError(t, imc.syncStatusWithPod(im))
+	require.Equal(t, longhorn.InstanceManagerStateRunning, im.Status.CurrentState)
+	require.Equal(t, "2001:db8::10", im.Status.IP)
+	require.Equal(t, types.DataEngineIPFamilyIPv4, *im.Status.IPFamily)
 }
 
 func TestSyncInstanceManagerIPFamilyRejectsStorageNetworkFamilyFailure(t *testing.T) {
