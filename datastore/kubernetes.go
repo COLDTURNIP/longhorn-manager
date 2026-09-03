@@ -1434,23 +1434,6 @@ func (s *DataStore) GetIPFromPodByCNISettingOrdered(pod *corev1.Pod, settingName
 	return ips[0], nil
 }
 
-func getOrderedPodIPsFromPod(pod *corev1.Pod) []string {
-	if len(pod.Status.PodIPs) == 0 {
-		return []string{pod.Status.PodIP}
-	}
-
-	podIPs := make([]string, 0, len(pod.Status.PodIPs)+1)
-	if pod.Status.PodIP != "" {
-		podIPs = append(podIPs, pod.Status.PodIP)
-	}
-	for _, podIP := range pod.Status.PodIPs {
-		if podIP.IP != pod.Status.PodIP {
-			podIPs = append(podIPs, podIP.IP)
-		}
-	}
-	return podIPs
-}
-
 func getCNIIPsFromPodByNetwork(pod *corev1.Pod, network string) ([]string, error) {
 	ips, err := getOrderedCNIIPsFromPodByNetwork(pod, network)
 	if err != nil {

@@ -45,7 +45,7 @@ func TestInstanceManagerIPFamilyOptionRejectsInvalidValues(t *testing.T) {
 func newInstanceManagerIPFamilyOptionController(t *testing.T, family string) *InstanceManagerController {
 	t.Helper()
 	kubeClient := kubefake.NewSimpleClientset()
-	lhClient := lhfake.NewSimpleClientset()
+	lhClient := lhfake.NewClientset()
 	extensionsClient := apiextensionsfake.NewSimpleClientset()
 	informerFactories := util.NewInformerFactories(TestNamespace, kubeClient, lhClient, k8scontroller.NoResyncPeriodFunc())
 	ds := datastore.NewDataStore(TestNamespace, lhClient, kubeClient, extensionsClient, informerFactories)
